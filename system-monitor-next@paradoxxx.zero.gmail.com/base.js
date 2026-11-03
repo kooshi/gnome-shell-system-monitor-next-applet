@@ -454,6 +454,23 @@ export const Chart = class SystemMonitor_Chart {
         }
         this.actor.queue_repaint();
     }
+
+    // Seed the chart with a restored flat/total history (e.g. after the widget is
+    // recreated) rather than starting empty. Since we only have a total per sample,
+    // not a per-metric breakdown, everything is attributed to the first series.
+    // update() stores stacked (cumulative) values, so every later series carries
+    // the same total (each adds 0 on top of the one below it).
+    seed_flat(values) {
+        const n = this.parentC.colors.length;
+        const trimmed = values.slice(-this.width);
+        for (let i = 0; i < n; i++) {
+            this.data[i] = trimmed.slice();
+        }
+        if (this.actor.visible) {
+            this.actor.queue_repaint();
+        }
+    }
+
     _draw() {
         if (!this.actor.visible) {
             return;
@@ -468,8 +485,14 @@ export const Chart = class SystemMonitor_Chart {
             max = this.parentC.max;
         } else {
             max = Math.max.apply(this, this.data[this.data.length - 1]);
-            max = Math.max(1, Math.pow(2, Math.ceil(Math.log(max) / Math.log(2))));
+            // Floor the scale. Without it, a widget sitting near zero at login
+            // scales to whatever trickle it sees first, so a few KiB/s of
+            // background chatter draws a completely full graph.
+            max = Math.max(this.parentC.graph_min_scale,
+                Math.pow(2, Math.ceil(Math.log(max) / Math.log(2))));
             if (this.parentC.graph_scale_cooldown_delay_minutes !== 0) {
+                if (!Number.isFinite(this.parentC.graph_scale_max_including_cooldown))
+                    this.parentC.graph_scale_max_including_cooldown = 0;
                 if (max > this.parentC.graph_scale_max_including_cooldown) {
                     // Restart the cooldown period with this new max.
                         this.parentC.restart_cooldown_timer(max);
@@ -814,6 +837,14 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
      *   icon           - Gio.Icon for 'icon' panel layout
      *   tipVals        - Array overriding auto-mapped tooltip values
      *   tipUnits       - Array overriding tooltip unit labels
+     *   extra          - {key: value} text for the items returned by
+     *                    create_extra_text_items(); unknown keys are ignored
+     *
+     * Optional hook:
+     *   create_extra_text_items() - Return {key: St.Widget} of extra panel items
+     *                    placed next to the graph. Fill them via the `extra` return
+     *                    key. They are shown only when the 'graph-average' config
+     *                    key is true and the graph is visible.
      *
      * Constructor receives a config object with per-instance settings:
      *   { uuid, type, device, display, style, graph-width, refresh-time,
@@ -850,6 +881,11 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
         this.menu_visible = true;
         this._updateErrorLogged = false;
         this._asyncGen = 0;
+
+        // Lower bound for an auto-scaled graph, in the widget's own units.
+        // Widgets with a meaningful resting range raise this; 1 keeps the
+        // previous behaviour for the rest.
+        this.graph_min_scale = 1;
 
         // Maximum value preserved during cooldown period
         this.graph_scale_max_including_cooldown = 0;
@@ -910,8 +946,27 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
         for (let item in this.text_items) {
             this.text_box.add_child(this.text_items[item]);
         }
-        this.actor.add_child(this.chart.actor);
+
+        if (this.create_extra_text_items) {
+            this.extra_text_items = this.create_extra_text_items();
+
+            this.extra_text_box = new St.BoxLayout();
+
+            // move chart into same box like old patch
+            this.extra_text_box.add_child(this.chart.actor);
+
+            for (let item in this.extra_text_items) {
+                this.extra_text_box.add_child(this.extra_text_items[item]);
+            }
+
+            this.actor.add_child(this.extra_text_box);
+        } else {
+            this.actor.add_child(this.chart.actor);
+        }
+
         change_style.call(this);
+
+        this.update_extra_visibility();
 
         this.menu_items = this.create_menu_items();
 
@@ -969,6 +1024,10 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
         if (oldConfig['show-menu'] !== newConfig['show-menu']) {
             this.menu_visible = newConfig['show-menu'];
             build_menu_info(this.extension);
+        }
+
+        if (oldConfig['graph-average'] !== newConfig['graph-average'] || oldConfig.style !== newConfig.style) {
+            this.update_extra_visibility();
         }
 
         this.update();
@@ -1200,6 +1259,13 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
         sm_log(`${this.elt}: async collect did not finish; giving up on it`, 'warn');
         this._asyncPending = false;
     }
+    update_extra_visibility() {
+        if (!this.extra_text_items)
+            return;
+        const v = Boolean(this.config['graph-average'] && this.chart.actor.visible);
+        for (const key in this.extra_text_items)
+            this.extra_text_items[key].visible = v;
+    }
     _applyCollected(data) {
         try {
             if (data)
@@ -1245,6 +1311,15 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
                 this.tip_labels[i].text = this.tip_vals[i].toString();
         }
     }
+    _applyExtra(extra) {
+        if (!extra || !this.extra_text_items)
+            return;
+        for (const key in extra) {
+            const item = this.extra_text_items[key];
+            if (item)
+                item.text = extra[key].toString();
+        }
+    }
     _autoApply(data) {
         const meta = this.constructor.metadata;
         const metrics = this.color_name;
@@ -1266,6 +1341,7 @@ export const ElementBase = class SystemMonitor_ElementBase extends TipBox {
                     this.tip_unit_labels[i].text = data.tipUnits[i];
             }
         }
+        this._applyExtra(data.extra);
 
         let display = data.display;
         if (display === undefined) {

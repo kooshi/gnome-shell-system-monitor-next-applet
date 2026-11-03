@@ -39,6 +39,8 @@ const Net = class SystemMonitor_Net extends ElementBase {
         this._lastTime = 0;
         this._noEdgeLogged = false;
         this._missingLogged = false;
+        // collect() reports KiB/s, so this floors the graph at 64 KiB/s.
+        this.graph_min_scale = 64;
         this.tip_format([_('KiB/s'), '/s', _('KiB/s'), '/s', '/s']);
     }
 

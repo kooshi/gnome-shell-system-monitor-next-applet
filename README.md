@@ -75,7 +75,7 @@ Before installing, ensure you have the necessary system packages (note that if y
 
 For NVIDIA graphics card memory monitoring, install `nvidia-smi`.
 
-For reliable thermal and fan monitoring (especially with multiple sensors of the same type, e.g. dual NVMe drives), install `lm-sensors` (`lm_sensors` on some distros). Without it, the extension falls back to direct sysfs enumeration which may not distinguish identically-named sensors.
+For thermal and fan monitoring, install `lm-sensors` (`lm_sensors` on some distros) for the widest sensor coverage. The Add Monitor dialog picks one source per sensor type: if `lm-sensors` reports any sensor of that type, its list is offered on its own; only when `lm-sensors` reports none for that type does the dialog fall back to reading sysfs directly. So a sensor that `lm-sensors` does not recognize is not offered even if sysfs exposes it, as long as `lm-sensors` reports at least one other sensor of that type. Monitors you already have keep working either way.
 
 ## Installation
 
